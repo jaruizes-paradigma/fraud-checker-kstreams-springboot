@@ -1,0 +1,102 @@
+---
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    hostname: zookeeper
+    container_name: zookeeper
+    ports:
+      - '2181:2181'
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    healthcheck:
+      test: nc -z localhost 2181 || exit -1
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    extra_hosts:
+      - "moby:127.0.0.1"
+  broker:
+    image: confluentinc/cp-kafka:latest
+    hostname: broker
+    container_name: broker
+    ports:
+      - '29092:29092'
+      - '9092:9092'
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://broker:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    healthcheck:
+      test: nc -z localhost 9092 || exit -1
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    extra_hosts:
+      - "moby:127.0.0.1"
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    hostname: kafka-ui
+    container_name: kafka-ui
+    ports:
+      - "9081:9081"
+    depends_on:
+      broker:
+        condition: service_healthy
+    environment:
+      SERVER_PORT: 9081
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: broker:9092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+      KAFKA_CLUSTERS_0_NAME: local
+  init-kafka:
+    image: confluentinc/cp-kafka:latest
+    hostname: init
+    container_name: init
+    depends_on:
+      broker:
+        condition: service_healthy
+    entrypoint: [ '/bin/sh', '-c' ]
+    command: |
+      "
+      # blocks until kafka is reachable
+      kafka-topics --bootstrap-server broker:9092 --list
+      echo -e 'Creating kafka topics'
+      kafka-topics --create --if-not-exists --topic movements --bootstrap-server broker:9092 --partitions 1 --replication-factor 1
+      kafka-topics --create --if-not-exists --topic fraud-cases --bootstrap-server broker:9092 --partitions 1 --replication-factor 1
+      echo -e 'Successfully created the following topics:'
+      kafka-topics --bootstrap-server broker:9092 --list
+      "
+  generator:
+    image: fraud-checker-generator:v1
+    hostname: fraud-checker-generator
+    container_name: fraud-checker-generator
+    ports:
+      - "8090:8090"
+    depends_on:
+      broker:
+        condition: service_healthy
+    environment:
+      SERVER_PORT: 8090
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: broker:9092
+  fraud-checker:
+    image: fraud-checker-dsl:v1
+    hostname: fraud-checker
+    container_name: fraud-checker
+    depends_on:
+      broker:
+        condition: service_healthy
+    environment:
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: broker:9092
+      APP_TOPICS_MOVEMENTS: movements
+      APP_TOPICS_FRAUD: fraud-cases
+      APP_SESSION_INACTIVITY-GAP: 60
+      APP_SESSION_CHECK-INACTIVE: 10
